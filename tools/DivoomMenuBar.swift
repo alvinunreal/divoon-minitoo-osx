@@ -5,6 +5,8 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
     let repo: URL
+    let toolRoot: URL
+    let supportDir: URL
     var daemonProcess: Process?
     var statusItemViewTimer: Timer?
     var lastMessage = "Ready"
@@ -12,13 +14,28 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let address = "B1:21:81:B1:F0:84"
     let channel = "1"
     let daemonPort = "40583"
-    var menuLog: URL { repo.appendingPathComponent("captures/divoom-menubar.log") }
-    var daemonLog: URL { repo.appendingPathComponent("captures/divoom-menubar-daemon.log") }
-    var daemonPidFile: URL { repo.appendingPathComponent("captures/divoom-menubar-daemon.pid") }
+    var menuLog: URL { supportDir.appendingPathComponent("divoom-menubar.log") }
+    var daemonLog: URL { supportDir.appendingPathComponent("divoom-menubar-daemon.log") }
+    var daemonPidFile: URL { supportDir.appendingPathComponent("divoom-menubar-daemon.pid") }
+    var capturesDir: URL { supportDir.appendingPathComponent("captures/mac-send") }
 
     override init() {
-        self.repo = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let fm = FileManager.default
+        let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
+        let resources = Bundle.main.resourceURL
+        let bundledTools = resources?.appendingPathComponent("tools")
+        if let resources, let bundledTools, fm.fileExists(atPath: bundledTools.appendingPathComponent("divoom-daemon").path) {
+            self.repo = resources
+            self.toolRoot = bundledTools
+        } else {
+            self.repo = cwd
+            self.toolRoot = cwd.appendingPathComponent("tools")
+        }
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? cwd
+        self.supportDir = appSupport.appendingPathComponent("DivoomMiniToo", isDirectory: true)
         super.init()
+        try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: capturesDir, withIntermediateDirectories: true)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -32,6 +49,7 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.refreshTitle()
         }
         refreshTitle()
+        startDaemon(disconnectFirst: true)
     }
 
     func refreshTitle() {
@@ -50,9 +68,9 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         menu.addItem(disabled("Daemon: \(daemonRunning ? "Running" : "Stopped")"))
         menu.addItem(disabled("Audio profile: \(audioConnected ? "Connected" : "Disconnected")"))
-        menu.addItem(disabled("Last: \(lastMessage)"))
+        menu.addItem(disabled("Last: \(shortStatus(lastMessage))"))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(item("Send Image…", #selector(sendImage), enabled: daemonRunning))
+        menu.addItem(item("Send Image/GIF/Video…", #selector(sendImage), enabled: daemonRunning))
         menu.addItem(item("Activate Custom Face 1", #selector(activateCustomFace1), enabled: daemonRunning))
         menu.addItem(item("Activate Custom Face 2", #selector(activateCustomFace2), enabled: daemonRunning))
         menu.addItem(NSMenuItem.separator())
@@ -85,12 +103,31 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
+    func shortStatus(_ message: String, limit: Int = 72) -> String {
+        let singleLine = message.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
+        if singleLine.count <= limit { return singleLine }
+        return String(singleLine.prefix(limit - 1)) + "…"
+    }
+
+    func executablePath(_ name: String) -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/\(name)",
+            "/usr/local/bin/\(name)",
+            "/usr/bin/\(name)",
+            "/bin/\(name)"
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     func run(_ executable: String, _ args: [String], wait: Bool = true) -> (Int32, String) {
         appendLog("run \(executable) \(args.joined(separator: " ")) wait=\(wait)")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: executable)
         p.arguments = args
         p.currentDirectoryURL = repo
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
@@ -109,19 +146,21 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
            kill(pid, 0) == 0 {
             return true
         }
-        let (code, _) = run("/bin/sh", ["-lc", "pgrep -f 'tools/divoom-daemon' >/dev/null"], wait: true)
+        let daemonPath = toolRoot.appendingPathComponent("divoom-daemon").path.replacingOccurrences(of: "'", with: "'\\''")
+        let (code, _) = run("/bin/sh", ["-lc", "pgrep -f '\(daemonPath)' >/dev/null || pgrep -f 'divoom-daemon' >/dev/null"], wait: true)
         return code == 0
     }
 
     func isAudioConnected() -> Bool {
-        let (code, out) = run("/opt/homebrew/bin/blueutil", ["--is-connected", address], wait: true)
+        guard let blueutil = executablePath("blueutil") else { return false }
+        let (code, out) = run(blueutil, ["--is-connected", address], wait: true)
         return code == 0 && out.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
     }
 
     func setStatus(_ message: String) {
         appendLog("status \(message)")
         DispatchQueue.main.async {
-            self.lastMessage = message
+            self.lastMessage = self.shortStatus(message, limit: 160)
             self.refreshTitle()
             self.rebuildMenu()
         }
@@ -129,7 +168,9 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func startDaemon(disconnectFirst: Bool) {
         DispatchQueue.global(qos: .userInitiated).async {
-            if disconnectFirst { _ = self.run("/opt/homebrew/bin/blueutil", ["--disconnect", self.address]) }
+            if disconnectFirst, let blueutil = self.executablePath("blueutil") {
+                _ = self.run(blueutil, ["--disconnect", self.address])
+            }
             Thread.sleep(forTimeInterval: disconnectFirst ? 1.5 : 0.0)
             if self.isDaemonRunning() {
                 self.setStatus("Daemon already running")
@@ -137,7 +178,7 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             let log = self.daemonLog
             let p = Process()
-            p.executableURL = self.repo.appendingPathComponent("tools/divoom-daemon")
+            p.executableURL = self.toolRoot.appendingPathComponent("divoom-daemon")
             p.arguments = [self.address, self.channel, self.daemonPort]
             p.currentDirectoryURL = self.repo
             let logHandle: FileHandle
@@ -178,7 +219,7 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .userInitiated).async {
             self.daemonProcess?.terminate()
             self.daemonProcess = nil
-            _ = self.run("/usr/bin/pkill", ["-f", "tools/divoom-daemon"])
+            _ = self.run("/usr/bin/pkill", ["-f", "divoom-daemon"])
             try? FileManager.default.removeItem(at: self.daemonPidFile)
             self.setStatus("Daemon stopped")
         }
@@ -194,21 +235,29 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func disconnectAudioMenu() {
         DispatchQueue.global().async {
-            let (_, out) = self.run("/opt/homebrew/bin/blueutil", ["--disconnect", self.address])
+            guard let blueutil = self.executablePath("blueutil") else {
+                self.setStatus("blueutil not found")
+                return
+            }
+            let (_, out) = self.run(blueutil, ["--disconnect", self.address])
             self.setStatus(out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Audio disconnected" : out)
         }
     }
 
     @objc func reconnectAudioMenu() {
         DispatchQueue.global().async {
-            let (_, out) = self.run("/opt/homebrew/bin/blueutil", ["--connect", self.address])
+            guard let blueutil = self.executablePath("blueutil") else {
+                self.setStatus("blueutil not found")
+                return
+            }
+            let (_, out) = self.run(blueutil, ["--connect", self.address])
             self.setStatus(out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Audio reconnect requested" : out)
         }
     }
 
     @objc func sendImage() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg, .image]
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .image, .movie]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         NSApp.activate(ignoringOtherApps: true)
@@ -218,11 +267,12 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.setStatus("Daemon not running")
                 return
             }
-            let py = self.repo.appendingPathComponent(".venv/bin/python").path
-            let client = self.repo.appendingPathComponent("tools/divoom_send.py").path
-            let (code, out) = self.run(py, [client, url.path])
+            let venvPy = self.repo.appendingPathComponent(".venv/bin/python").path
+            let py = FileManager.default.isExecutableFile(atPath: venvPy) ? venvPy : (self.executablePath("python3") ?? "/usr/bin/python3")
+            let client = self.toolRoot.appendingPathComponent("divoom_send.py").path
+            let (code, out) = self.run(py, [client, url.path, "--out-dir", self.capturesDir.path])
             let detail = String(out.suffix(900))
-            self.setStatus(code == 0 ? "Image sent" : "Send issue: \(detail)")
+            self.setStatus(code == 0 ? "Media sent" : "Send issue: \(detail)")
         }
     }
 
@@ -232,8 +282,9 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.setStatus("Daemon not running")
                 return
             }
-            let py = self.repo.appendingPathComponent(".venv/bin/python").path
-            let client = self.repo.appendingPathComponent("tools/divoom_clock.py").path
+            let venvPy = self.repo.appendingPathComponent(".venv/bin/python").path
+            let py = FileManager.default.isExecutableFile(atPath: venvPy) ? venvPy : (self.executablePath("python3") ?? "/usr/bin/python3")
+            let client = self.toolRoot.appendingPathComponent("divoom_clock.py").path
             let (code, out) = self.run(py, [client, shortcut])
             let detail = String(out.suffix(700))
             self.setStatus(code == 0 ? "Activated custom face \(shortcut)" : "Clock issue: \(detail)")
@@ -244,11 +295,16 @@ final class DivoomMenuBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func activateCustomFace2() { activateClock("custom2") }
 
     @objc func openCaptures() {
-        NSWorkspace.shared.open(repo.appendingPathComponent("captures/mac-send"))
+        NSWorkspace.shared.open(capturesDir)
     }
 
     @objc func openProtocol() {
-        NSWorkspace.shared.open(repo.appendingPathComponent("PROTOCOL.md"))
+        let bundled = repo.appendingPathComponent("PROTOCOL.md")
+        if FileManager.default.fileExists(atPath: bundled.path) {
+            NSWorkspace.shared.open(bundled)
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("PROTOCOL.md"))
+        }
     }
 
     @objc func openMenuLog() {

@@ -364,7 +364,7 @@ Implemented tools:
 - `tools/DivoomDaemon.swift`
 - `tools/divoom-daemon`
 - `tools/divoom_send.py`
-  - Preferred CLI for image/video sends through the daemon.
+  - Preferred CLI for image/GIF/video sends through the daemon.
   - Supports MP4/video tuning: `--start`, `--duration`, `--fps`, `--speed`, `--max-frames`, `--size`, `--brightness`, `--contrast`, `--saturation`, `--posterize-bits`, `--sharpen`, `--zstd-window-log`.
 
 Daemon behavior:
@@ -429,7 +429,35 @@ Important operational note:
 
 ## Menu-bar controller
 
-Build:
+Packaged app build:
+
+```bash
+tools/build-divoom-app.sh
+```
+
+This creates:
+
+```text
+build/Divoom MiniToo.app
+```
+
+Install/copy like a normal macOS app:
+
+```bash
+cp -R "build/Divoom MiniToo.app" /Applications/
+open "/Applications/Divoom MiniToo.app"
+```
+
+Packaged app behavior:
+
+- Runs as a menu-bar app (`LSUIElement`, no Dock icon).
+- On launch/open, it automatically disconnects the Divoom macOS audio profile once, waits briefly, then starts the Swift RFCOMM daemon.
+- The daemon binary is bundled inside the app at `Contents/Resources/tools/divoom-daemon` and keeps RFCOMM channel `1` open.
+- Logs and generated send artifacts go to `~/Library/Application Support/DivoomMiniToo/` so the app can be copied to `/Applications` without writing into its bundle.
+- `blueutil` is still required for audio disconnect/reconnect convenience actions (`brew install blueutil`).
+- Image/GIF/video sending from the app shells out to the bundled Python venv when packaged.
+
+Raw binary build/run from repo:
 
 ```bash
 swiftc tools/DivoomMenuBar.swift -framework AppKit -o tools/divoom-menubar
@@ -448,8 +476,8 @@ Menu-bar title:
 
 Menu actions:
 
-- `Send Image…`
-  - Choose a PNG/JPEG/image file.
+- `Send Image/GIF/Video…`
+  - Choose a PNG/JPEG/GIF/video file.
   - Uses `.venv/bin/python tools/divoom_send.py <image>`.
   - Disabled while daemon is stopped.
 - `Activate Custom Face 1`
@@ -487,7 +515,7 @@ Current UX notes:
 
 - The menu refreshes when opened, so daemon/audio status should reflect current state.
 - The app avoids modal success/error popups; status appears as the `Last:` line in the menu.
-- Current implementation is a lean menu-bar binary, not a packaged `.app` yet. If desired, wrap it in a proper LaunchAgent or `.app` bundle later.
+- The packaged `.app` can be copied into `/Applications`; opening it is enough to disconnect audio once and start the daemon.
 
 ## Custom face selection
 

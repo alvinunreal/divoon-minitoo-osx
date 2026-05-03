@@ -31,15 +31,15 @@ def submit(host: str, port: int, packets_path: Path, delay: float, dry_run: bool
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Convert image/video and submit it to the Divoom RFCOMM daemon")
+    parser = argparse.ArgumentParser(description="Convert image/GIF/video and submit it to the Divoom RFCOMM daemon")
     parser.add_argument("media", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=40583)
     parser.add_argument("--delay", type=float, default=0.012)
-    parser.add_argument("--speed", type=int, default=None, help="frame duration in milliseconds; default 1000 for images or derived from --fps for video")
-    parser.add_argument("--fps", type=float, default=6.0, help="video sampling fps; also derives speed when --speed is omitted")
-    parser.add_argument("--max-frames", type=int, default=10, help="maximum video frames to send, 1..255")
-    parser.add_argument("--size", type=int, default=None, help="square output size; defaults to 128 for images, 64 for video")
+    parser.add_argument("--speed", type=int, default=None, help="frame duration in milliseconds; default 1000 for images or derived from --fps for GIF/video")
+    parser.add_argument("--fps", type=float, default=6.0, help="GIF/video sampling fps; also derives speed when --speed is omitted")
+    parser.add_argument("--max-frames", type=int, default=10, help="maximum GIF/video frames to send, 1..255")
+    parser.add_argument("--size", type=int, default=None, help="square output size; defaults to 128 for images, 64 for GIF/video")
     parser.add_argument("--start", type=float, default=None, help="video start time in seconds")
     parser.add_argument("--duration", type=float, default=None, help="video duration limit in seconds")
     parser.add_argument("--brightness", type=float, default=0.0, help="ffmpeg eq brightness, e.g. 0.15")

@@ -14,7 +14,7 @@ from PIL import Image, ImageEnhance, ImageOps
 
 
 CMD_APP_NEW_GIF_2020 = 0x8B
-VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".gif", ".apng"}
 
 
 def u16le(n: int) -> bytes:
